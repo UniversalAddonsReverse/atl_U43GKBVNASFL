@@ -1,15 +1,4 @@
-do
-    local _env = getgenv and getgenv() or _G
-    local _noop = function(...) end
-    _env.print, _env.warn, _env.error, _env.info = _noop, _noop, _noop, _noop
-    _env.rconsoleprint, _env.rconsolewarn, _env.rconsoleerr, _env.rconsoleinfo = _noop, _noop, _noop, _noop
-    _env.tostring = function(obj) if type(obj) == "string" or type(obj) == "number" then return obj end return "SystemObject" end
-    local _net_req = (http_request or request or (syn and syn.request) or (fluxus and fluxus.request))
-    if _net_req then _env.request = _net_req end
-    if _env.hookfunction then _env.hookfunction = function(func, hook) return func end; _env.hookfunc = _env.hookfunction; _env.replaceclosure = _env.hookfunction end
-    local _raw_pairs = pairs
-    _env.pairs = function(t) if t == _G or t == _env then return _raw_pairs({}) end return _raw_pairs(t) end
-end
+print("Access Denied")
 
 if not game:IsLoaded() then game.Loaded:Wait() end
 
